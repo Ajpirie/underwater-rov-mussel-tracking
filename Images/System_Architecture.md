@@ -11,7 +11,8 @@ flowchart LR
     P --> R["Session estimates<br/>and diagnostics"]
     R --> G["GUI supervision"]
     R --> O["Outputs / exports"]
-    R -.-> V["ROV interface<br/>placeholders only"]
+    G -. "operator actions" .-> V["ROV supervisor<br/>simulation only"]
+    V --> S["Simulated feedback<br/>no hardware"]
 ```
 
-**Read:** Both Test and Run use one supported prediction method, not two algorithms. Live observations are individually timestamped on receipt and update only their own ID. Recorded frames have known timing. ROV actuation is not implemented.
+**Read:** Both Test and Run use one supported prediction method, not two algorithms. Live observations are individually timestamped on receipt and update only their own ID. Recorded frames have known timing. An optional four-state supervisor uses only simulated ROV feedback; actual vehicle actuation is not implemented.

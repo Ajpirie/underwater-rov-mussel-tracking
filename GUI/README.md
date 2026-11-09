@@ -15,7 +15,7 @@ Preview: [Accuracy view](Preview_Accuracy.png) and [3D tracking view](Preview_3D
 
 ## Controls
 
-**Start / Pause / Resume / Step / Stop** are across the top. Replay speed and timeline are Test-only. **Lock current cluster** freezes the target IDs for advisory alignment so newly acquired IDs do not shift the selected group. **Apply alignment settings** updates the live advisory thresholds. A locked cluster is required before the interface presents a readiness assessment. **Request alignment/collection (stub)** calls placeholder functions and *never sends hardware commands*. Collection is disabled in Run mode because asynchronous tracking cannot establish collection readiness; neither stub is a safety interlock.
+**Start / Pause / Resume / Step / Stop** are across the top. Replay speed and timeline are Test-only. **Lock current cluster** freezes the target IDs for advisory alignment so newly acquired IDs do not shift the selected group. **Apply alignment settings** updates the live advisory thresholds. A locked cluster is required before the interface presents a readiness assessment. **ROV simulation controls** are Run-only and test operator arming, fake approach feedback, manual collection approval, fault timeouts and reset. They never send hardware commands or assert actual collection readiness.
 
 **Prediction settings:** nominal frame period (s), forecast horizon (s), ID timeout (s) and max ID. Run mode measures each ID’s observation-to-observation interval automatically; Test mode uses the recording's time base. **Advisory settings:** target Z (m), XY and Z tolerances (m), and low-motion threshold (m/s), rolling window (s) and minimum calm duration (s). Thresholds are starting values, not validated limits for deployment. The sole supported UKF method is fixed in the GUI by design.
 
@@ -25,9 +25,15 @@ Settings persist across launches in `~/.mussel_prediction/control_panel.json`; o
 
 | File | What it does |
 |---|---|
-| `control_panel.py` | Builds Tkinter widgets and Matplotlib plots; manages replay, settings, progress, live polling, chart selection and placeholder buttons. |
+| `control_panel.py` | Builds Tkinter widgets and Matplotlib plots; manages replay, settings, progress, live polling, chart selection and simulated supervisor controls. |
 | `__main__.py` | Supports `python -m GUI`. |
 
 The active GUI imports the headless integration API instead of duplicating prediction logic. It uses Tkinter's main thread for drawing; the external CV adapter can publish observations from its own worker thread. Display refresh and plotting can be slower than the camera frame rate on low-power laptops; **a buffer overflow stops the session rather than silently losing measurements**.
 
 **Architecture:** [System module diagram](../Images/System_Architecture.svg). The graphical interface calls `Integration/` rather than importing or selecting prediction variants.
+
+## ROV supervisory simulation
+
+In **Run** mode, the ROV section operates a separate, **simulation-only** four-state supervisor. Start Run, receive an active target, then use **Arm simulation → Simulate approach → Approve simulated collection**. Collection approval is only enabled after the simulator reports acknowledged arrival. Completion returns the sequence to IDLE (disarmed). **Safe stop (simulation)** latches FAULT until **Reset simulated fault** is pressed. Stopping the tracking session while armed or active, or losing the live signal during a simulated action, also latches FAULT.
+
+These controls never call `rov_interface.py` or any ROV hardware and do not use the lull indicator to make control decisions. The target is a camera-relative demonstration value, not a navigation setpoint. See [Integration/README.md](../Integration/README.md#simulation-only-rov-controller).

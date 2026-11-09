@@ -1,6 +1,6 @@
 # Mussel Motion Prediction — client handover
 
-**Status:** The active prediction method retains the validated motion/noise equations. Its timing API accepts measured elapsed intervals per mussel. The desktop panel supports recorded-frame replay and an observation-by-observation live integration point. **ROV actuation and autonomous collection are not yet integrated or validated.** The alignment and collection functions currently only print placeholder messages.
+**Status:** The active prediction method retains the validated motion/noise equations. Its timing API accepts measured elapsed intervals per mussel. The desktop panel supports recorded-frame replay and an observation-by-observation live integration point. **ROV actuation and autonomous collection are not integrated or validated.** A four-state simulation-only supervisory controller can demonstrate operator approvals, command feedback and timeouts without sending commands to a vehicle.
 
 ## What the system does
 
@@ -10,9 +10,9 @@ The upstream stereo computer-vision system identifies mussels and supplies their
 
 [Editable Mermaid diagram](Images/System_Architecture.md) · [Integration data flow](Integration/README.md#data-flow) · [UKF prediction pipeline](Prediction/README.md#prediction-pipeline)
 
-Recorded **Test** processing and asynchronous **Run** processing each own their tracking session. Both call the same `Prediction/prediction_method.py` UKF. Results are exposed to the supervisory GUI and saved to `Outputs/`; ROV control is not connected.
+Recorded **Test** processing and asynchronous **Run** processing each own their tracking session. Both call the same `Prediction/prediction_method.py` UKF. Results are exposed to the supervisory GUI and saved to `Outputs/`; the simulated ROV sequence is separate from the UKF and cannot actuate hardware.
 
-This repository **does not** include the stereo camera calibration/tracking service, an ROV communications stack, motion control, or autonomous collection logic. The displayed alignment/lull information is an **advisory**, not a safe-to-collect signal. The ROV interface must be implemented and verified separately before any vehicle movement can be commanded.
+This repository **does not** include the stereo camera calibration/tracking service, an ROV communications stack, physical motion control, or autonomous collection hardware logic. The displayed alignment/lull information is an **advisory**, not a safe-to-collect signal. The ROV interface must be implemented and verified separately before any vehicle movement can be commanded.
 
 ## Quick start
 
@@ -52,7 +52,8 @@ Test mode retains the frame-based session; Run mode uses a separate observation-
    There is **no `finish_frame()` call**, and repeated IDs are normal. The adapter stamps the observation when it arrives using a monotonic clock. Each mussel's UKF advances only on that mussel's next observation, using time since its last observation. A disconnected tracking source leads to track expiry after the configured **ID timeout (s)**; no synthetic camera frames are invented.
 
    The supplied API is **in-process**, not a camera/network client. If the CV source is in another process or on another computer, implement a small transport adapter that decodes its `(ID, x, y, z)` records and calls `publish_observation()`. If data must be polled, call the same function for every record returned by each poll. See [Integration/README.md](Integration/README.md).
-3. The graphs update as observations arrive. Stop saves the stream, individual predictions and evaluation metrics in `Outputs/`. The ROV functions are still placeholders; Run-mode collection is disabled because the asynchronous cluster cannot be treated as a verified collection condition.
+3. The graphs update as observations arrive. Stop saves the stream, individual predictions and evaluation metrics in `Outputs/`.
+4. **Optional simulated ROV sequence:** use **Arm simulation**, then **Simulate approach** with an active target. Wait for simulated arrival and click **Approve simulated collection**; it never starts automatically. **Safe stop (simulation)** latches a FAULT until **Reset simulated fault**. No action is transmitted to the ROV. The frozen camera-relative target is illustrative only, not a verified vehicle coordinate.
 
 The **nominal step (s)** controls the forecast discretisation, **not** an assumed camera frame rate in Run mode. The input does not provide camera capture timestamps, so arrival-time intervals may contain upstream CV/transport delay. Two different IDs received consecutively cannot be assumed to be from the same camera frame.
 
@@ -66,9 +67,9 @@ In **Test**, a frame represents one recorded camera instant. In **Run**, observa
 
 | Location | Purpose |
 |---|---|
-| [`GUI/`](GUI/README.md) | Current Tkinter panel, playback controls, graphs, GUI archive and operating instructions |
+| [`GUI/`](GUI/README.md) | Current Tkinter panel, playback controls, graphs, simulation controls and operating instructions |
 | [`Prediction/`](Prediction/README.md) | **Active** `prediction_method.py` with per-ID UKF and elapsed-time updates; Fourier experiments in `Archive/` |
-| [`Integration/`](Integration/README.md) | CSV frame replay, independent live observations, centroid/lull advisories, exports and ROV placeholders; original runtime archived |
+| [`Integration/`](Integration/README.md) | CSV replay, live observations, centroid/lull advisories, exports, simulated supervisory state machine and unconnected ROV placeholders |
 | [`Test_Verification/`](Test_Verification/README.md) | UKF benchmark vs zero-order hold, model exploration and standalone lull checks; unrelated experiments in `Archive/` |
 | [`Data/`](Data/README.md) | Recorded real and synthetic tracking inputs and data-extraction tool |
 | [`Outputs/`](Outputs/README.md) | Newly generated session observation/prediction CSVs and summaries (not source data) |
@@ -88,6 +89,8 @@ The project exposes **one supported prediction method**. The obsolete UKF, its s
 **Centroid and lull:** Test uses frame-aligned tracked positions. Run combines the most recent measurements of IDs that have not expired, so the centroid and lull indication are **asynchronous estimates**, not a simultaneous camera measurement. Lull thresholds must be validated against real tracking input and may not be used to trigger ROV actions. See [Integration/README.md](Integration/README.md).
 
 **Forecast evaluation:** Once a forecast's target time has been reached, the system scores it against a valid observation at that time, or a target interpolated between two consecutive valid observations (only after the later one has arrived); it also compares the original measurement held constant (zero-order hold). `3D RMSE = sqrt(mean(||forecast - target||²))`. Lower is better; positive **vs. hold** percentage means the forecast beats that baseline. Scores require valid future observations and do not include missing targets. GUI plots position forecasts at their **target times**, rather than their issue times.
+
+**Simulated ROV controller:** Independent of prediction, the optional four-state sequence is IDLE → APPROACH → COLLECT → IDLE, with latched FAULT for stop, rejected requests or timeouts. It requires operator arming and separate manual approval before simulated collection. Simulated acknowledgement/arrival/completion are generated by `Integration/rov_simulator.py`; `rov_interface.py` still contains unconnected hardware placeholders. This software stop is **not** a physical E-stop. See [Integration/README.md](Integration/README.md#simulation-only-rov-controller).
 
 **Operator settings:** Nominal frame period, forecast horizon, ID timeout (seconds), lull speed threshold, lull window, minimum calm time, XY/Z alignment tolerances and target Z are configurable. There is no method-selection switch. The UKF's validated tuning constants are not exposed to the GUI.
 
@@ -114,7 +117,7 @@ These may improve eventual ROV deployment, but would alter engineering assumptio
 1. **Completed:** Per-instance frame period and prediction horizon now isolate different sessions.
 2. **Completed:** Elapsed-time UKF updates and time-based ID retention; note arrival times cannot remove unknown camera processing delay.
 3. **Define a camera-to-ROV coordinate transform** and validate axis polarity, lens calibration, target offset and alignment tolerances before converting advisory targets to commands.
-4. **Define a genuine ROV command state machine** (operator enable, interlocks, feedback, acknowledgements, timeouts and E-stop). The original functions have no motor/collection integration.
+4. **Connect and validate real ROV control when hardware is available.** The four-state **simulation-only** controller now exercises operator approval, fake acknowledgements, completion feedback, timeouts and a latched software stop. Real feedback, motor/collection controls, safety interlocks and a physical E-stop are **not implemented**.
 5. **Verify the lull detector against actual deployment sea states** and distinguish filtered sensor noise from genuine wave-driven motion before treating a lull as a collection window.
 6. **Add explicit frame IDs and persistent track identity rules** to the CV contract to resolve delayed frames and ID reassignment across long dropouts.
 

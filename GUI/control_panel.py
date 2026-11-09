@@ -25,7 +25,8 @@ from Integration.tracking_session import (ROOT, Frame, Snapshot, TrackingSession
 from Integration.live_input import live_source
 from Integration.observation_session import ObservationSession
 from Integration.session_export import export_session
-from Integration.rov_interface import CommandROVToTarget, commandROVToCollectMussels
+from Integration.rov_state_machine import ROVController, ROVState
+from Integration.rov_simulator import SimulatedROV
 
 CONFIG_PATH = Path.home() / '.mussel_prediction' / 'control_panel.json'
 BG = '#F4F7FB'
@@ -131,6 +132,8 @@ class ControlPanel(tk.Tk):
         self.last_display_draw = 0
         self._ignore_slider = False
         self._dataset_keys = {}
+        self.rov_controller = ROVController(SimulatedROV())
+        self._rov_logged = 0
         self._build_theme()
         self._build_layout()
         self.bind('<Configure>', self._responsive_layout, add='+')
@@ -236,7 +239,7 @@ class ControlPanel(tk.Tk):
         ttk.Label(self.test_source, text='RD: 2 fps  ·  260721: 15 fps + frame log',
                   style='SidebarHint.TLabel', wraplength=265).pack(anchor='w')
 
-        ttk.Label(self.live_source, text='Individual (ID, X, Y, Z) observations arrive through Integration.live_input.\nNo frame markers or camera interface required. ROV commands are stubs.',
+        ttk.Label(self.live_source, text='Individual (ID, X, Y, Z) observations arrive through Integration.live_input.\nNo frame markers required. ROV sequence is simulation only.',
                   style='SidebarHint.TLabel', wraplength=265).pack(anchor='w', pady=6)
 
         self._section(side, '02  PREDICTION')
@@ -274,13 +277,23 @@ class ControlPanel(tk.Tk):
         tk.Label(side, textvariable=self.motion_var, bg=WHITE, fg=MUTED,
                  justify='left', anchor='w', wraplength=260,
                  font=(self._font, 9)).pack(fill='x', pady=(6, 5))
-        self._section(side, '05  ROV · PLACEHOLDERS')
-        ttk.Label(side, text='Advisory only. Buttons call the original ROV placeholders; nothing is sent to a vehicle.',
+        self._section(side, '05  ROV · SIMULATION ONLY')
+        ttk.Label(side, text='No ROV commands are sent. This tests operator approval, simulated feedback, timeouts and stop/reset only.',
                   style='SidebarHint.TLabel', wraplength=265).pack(anchor='w', pady=(3, 6))
-        self.align_button = ttk.Button(side, text='Request alignment (stub)', command=self._command_alignment)
+        self.rov_status_var = tk.StringVar(value='IDLE · DISARMED')
+        tk.Label(side, textvariable=self.rov_status_var, bg=WHITE, fg=MUTED,
+                 justify='left', anchor='w', wraplength=260,
+                 font=(self._font, 9, 'bold')).pack(fill='x', pady=(3, 6))
+        self.rov_arm_button = ttk.Button(side, text='Arm simulation', command=self._arm_rov)
+        self.rov_arm_button.pack(fill='x', pady=2)
+        self.align_button = ttk.Button(side, text='Simulate approach', command=self._command_alignment)
         self.align_button.pack(fill='x', pady=2)
-        self.collect_button = ttk.Button(side, text='Request collection (stub)', command=self._command_collection)
+        self.collect_button = ttk.Button(side, text='Approve simulated collection', command=self._command_collection)
         self.collect_button.pack(fill='x', pady=2)
+        self.rov_stop_button = ttk.Button(side, text='Safe stop (simulation)', command=self._safe_stop_rov)
+        self.rov_stop_button.pack(fill='x', pady=2)
+        self.rov_reset_button = ttk.Button(side, text='Reset simulated fault', command=self._reset_rov)
+        self.rov_reset_button.pack(fill='x', pady=2)
         ttk.Button(side, text='Input format / interpretation', command=self._show_help).pack(fill='x', pady=2)
 
         main = ttk.Frame(content)
@@ -333,7 +346,7 @@ class ControlPanel(tk.Tk):
         self.log_box = tk.Text(self.page_events, background=WHITE, foreground=INK, relief='flat',
                                font=(self._font, 10), padx=20, pady=16, wrap='word', state='disabled')
         self.log_box.pack(fill='both', expand=True)
-        self._log('Test: recorded frames. Run: asynchronous observations (no frame markers). ROV commands are placeholders.')
+        self._log('Test: recorded frames. Run: asynchronous observations (no frame markers). ROV sequence is simulation-only.')
 
         transport = ttk.Frame(main, padding=(8, 10, 8, 0))
         transport.grid(row=2, column=0, sticky='ew')
@@ -458,7 +471,8 @@ class ControlPanel(tk.Tk):
         self.timeline.configure(state='normal' if mode == 'Test' else 'disabled')
         self._set_status('IDLE', MUTED)
         self.footer_var.set('Test: recorded data with live replay & evaluation.' if mode == 'Test' else
-                            'Run: individual tracking observations; camera frame grouping is not required. ROV control is not connected.')
+                            'Run: individual tracking observations. ROV sequence is simulation only; no hardware commands.')
+        self._update_rov_controls()
 
     def _collect_config(self):
         dt = pos_number(self.vars['frame_dt'].get(), 'Frame period', maximum=10)
@@ -548,7 +562,8 @@ class ControlPanel(tk.Tk):
                 self.playing = True
                 self.pause_button.configure(state='disabled')
                 self._log(f'Run started · independent observations · nominal forecast step {cfg["dt"]:g} s; '
-                          'no camera frame boundaries or ROV commands are required.')
+                          'ROV sequence simulation only, with explicit operator approval.')
+                self._update_rov_controls()
         except (ValueError, KeyError, OSError, ImportError) as exc:
             self._stop(quiet=True, clear=True)
             messagebox.showerror('Cannot start', str(exc))
@@ -708,9 +723,15 @@ class ControlPanel(tk.Tk):
                             max(2.0, self.config['stale'] * 2)):
                         self._set_status('NO SIGNAL', AMBER)
                         self.alignment_var.set('Tracking data stopped arriving; alignment unavailable.')
+                        if self.rov_controller.state in (ROVState.APPROACH, ROVState.COLLECT):
+                            self.rov_controller.stop('Tracking signal lost')
+        self._update_rov_controls()
         self.after(80, self._poll_live)
 
     def _stop(self, quiet=False, clear=False):
+        if (self.rov_controller.state in (ROVState.APPROACH, ROVState.COLLECT) or
+                self.rov_controller.armed):
+            self.rov_controller.stop('Tracking session stopped')
         self.playing = False
         if self.timer_id:
             self.after_cancel(self.timer_id)
@@ -733,6 +754,7 @@ class ControlPanel(tk.Tk):
             self.cursor = -1
             self.lock_ids = None
             self._reset_dashboard()
+        self._update_rov_controls()
         if not quiet:
             self._set_status('STOPPED' if self.session else 'IDLE', MUTED)
             self._log('Tracking stopped. Results remain available for review/export; Start begins a new session.')
@@ -1120,29 +1142,70 @@ class ControlPanel(tk.Tk):
             return None
         return tuple(float(x) for x in np.mean(positions, axis=0))
 
+    def _update_rov_controls(self):
+        """Refresh simulated controller feedback and permitted operator actions."""
+        controller = self.rov_controller
+        if self.vars['mode'].get() == 'Run':
+            controller.tick()
+        while self._rov_logged < len(controller.history):
+            self._log('ROV SIM: ' + controller.history[self._rov_logged])
+            self._rov_logged += 1
+        run = self.vars['mode'].get() == 'Run' and self.playing and self.session is not None
+        state = controller.state
+        if state == ROVState.FAULT:
+            status = 'FAULT · ' + str(controller.fault_reason)
+        elif state == ROVState.IDLE:
+            status = 'IDLE · ARMED' if controller.armed else 'IDLE · DISARMED'
+        elif state == ROVState.APPROACH:
+            status = 'APPROACH · READY FOR APPROVAL' if controller.arrived else 'APPROACH · WAITING FOR ARRIVAL'
+        else:
+            status = 'COLLECT · SIMULATING'
+        self.rov_status_var.set(status)
+        self.rov_arm_button.configure(state='normal' if run and state == ROVState.IDLE and not controller.armed else 'disabled')
+        self.align_button.configure(state='normal' if run and state == ROVState.IDLE and controller.armed and
+                                    self._current_target() is not None else 'disabled')
+        self.collect_button.configure(state='normal' if run and state == ROVState.APPROACH and controller.arrived else 'disabled')
+        self.rov_stop_button.configure(state='normal' if run and state != ROVState.FAULT else 'disabled')
+        self.rov_reset_button.configure(state='normal' if self.vars['mode'].get() == 'Run' and
+                                        state == ROVState.FAULT else 'disabled')
+
+    def _arm_rov(self):
+        try:
+            if not self.playing or self.vars['mode'].get() != 'Run':
+                raise RuntimeError('Start Run mode first')
+            self.rov_controller.arm()
+        except RuntimeError as exc:
+            messagebox.showwarning('Simulation unavailable', str(exc))
+        self._update_rov_controls()
+
     def _command_alignment(self):
-        centroid = self._current_target()
-        if centroid is None:
-            messagebox.showinfo('No target', 'Wait for camera tracking data first.')
+        target = self._current_target()
+        if target is None or not self.session or not self.session.snapshots or not self.session.snapshots[-1].active:
+            messagebox.showinfo('No active target', 'Wait for a live mussel position before simulating approach.')
             return
-        CommandROVToTarget(centroid)
-        self._log(f'ALIGNMENT PLACEHOLDER called with {tuple(round(x, 4) for x in centroid)} m. No vehicle action.')
+        try:
+            self.rov_controller.start_approach(target)
+        except (RuntimeError, ValueError) as exc:
+            messagebox.showwarning('Simulation unavailable', str(exc))
+        self._update_rov_controls()
 
     def _command_collection(self):
-        centroid = self._current_target()
-        if centroid is None:
-            messagebox.showinfo('No target', 'Wait for camera tracking data first.')
-            return
-        status = self._evaluate_alignment(self.session.snapshots[self.cursor])
-        if self.vars['mode'].get() == 'Run':
-            messagebox.showwarning('Unverified live alignment',
-                                   'Asynchronous camera measurements are advisory only; collection is unavailable.')
-            return
-        if 'CONDITIONS MET' not in status:
-            messagebox.showwarning('Collection not ready', 'Lock a target and confirm alignment and lull first.')
-            return
-        commandROVToCollectMussels(centroid)
-        self._log('COLLECTION PLACEHOLDER called. No actual collection was performed.')
+        try:
+            self.rov_controller.approve_collection()
+        except RuntimeError as exc:
+            messagebox.showwarning('Simulation unavailable', str(exc))
+        self._update_rov_controls()
+
+    def _safe_stop_rov(self):
+        self.rov_controller.stop('Operator simulated stop')
+        self._update_rov_controls()
+
+    def _reset_rov(self):
+        try:
+            self.rov_controller.reset()
+        except RuntimeError as exc:
+            messagebox.showwarning('Reset unavailable', str(exc))
+        self._update_rov_controls()
 
     def _show_help(self):
         messagebox.showinfo('Using the control panel',
@@ -1155,8 +1218,9 @@ class ControlPanel(tk.Tk):
             'X is left/right, Y is up/down, Z is forward/back. Confirm axis signs with CV integration.\n\n'
             'ACCURACY: 3D RMSE (mm) is evaluated only when the future observation arrives; '
             'Hold is the last measurement used as a baseline. The event log shows rejected measurements.\n\n'
-            'ROV: Live cluster/lull estimates combine asynchronously observed positions and are advisory only. '
-            'Collection is disabled in Run mode; vehicle functions are placeholders. '
+            'ROV: The four-state controller is simulation-only. Arm, request approach, wait for simulated arrival, '
+            'then explicitly approve simulated collection. Safe stop latches FAULT until operator reset. '
+            'No command reaches ROV hardware and the camera-coordinate centroid is not a validated vehicle target. '
             'Session observations, predictions and a summary are saved automatically in Outputs/.')
 
     def _log(self, message):
