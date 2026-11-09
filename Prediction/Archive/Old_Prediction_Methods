@@ -1,0 +1,79 @@
+# def predictPositionFFT(fft_thresh: float, predict_num_timesteps: int):
+#     """
+#     Predicts future position using a circular buffer and FFT/IFFT to extrapolate
+#     dominant frequencies.
+
+#     Returns:
+#         future_pos (tuple): Predicted future position (future_x, future_y, future_z, future_time).
+#                             Returns (0, 0, 0, future_time) until the buffer is full.
+#     """
+
+#     # Return zeros until the buffer has enough data #
+#     if len(xPos_Buffer) < buffer_length:
+#         return (0, 0, 0)
+
+#     # FFT of each axis #
+#     xPos_Freq = sp.fft.fft(list(xPos_Buffer))
+#     yPos_Freq = sp.fft.fft(list(yPos_Buffer))
+#     zPos_Freq = sp.fft.fft(list(zPos_Buffer))
+
+#     # Zero the DC component to focus on oscillatory behaviour #
+#     xPos_Freq[0] = 0
+#     yPos_Freq[0] = 0
+#     zPos_Freq[0] = 0
+
+#     # Calculate per-axis thresholds to suppress small signals #
+#     xThreshold = fft_thresh * np.max(np.abs(xPos_Freq))
+#     yThreshold = fft_thresh * np.max(np.abs(yPos_Freq))
+#     zThreshold = fft_thresh * np.max(np.abs(zPos_Freq))
+
+#     # Zero out sub-threshold frequency components #
+#     xPos_Freq_Denoised = np.where(np.abs(xPos_Freq) > xThreshold, xPos_Freq, 0)
+#     yPos_Freq_Denoised = np.where(np.abs(yPos_Freq) > yThreshold, yPos_Freq, 0)
+#     zPos_Freq_Denoised = np.where(np.abs(zPos_Freq) > zThreshold, zPos_Freq, 0)
+
+#     # IFFT and take the real part of the first N predicted timesteps #
+#     future_xPos = np.real(sp.fft.ifft(xPos_Freq_Denoised))[predict_num_timesteps - 1]
+#     future_yPos = np.real(sp.fft.ifft(yPos_Freq_Denoised))[predict_num_timesteps - 1]
+#     future_zPos = np.real(sp.fft.ifft(zPos_Freq_Denoised))[predict_num_timesteps - 1]
+
+#     # Re-pack predicted position into tuple for return #
+#     future_pos = (future_xPos, future_yPos, future_zPos)
+
+#     return future_pos
+
+
+# def predictPositionInterp(interpolation_order: int, data_time_step: float):
+#     """
+#     Predicts future position using a circular buffer and FFT/IFFT to extrapolate
+#     dominant frequencies.
+
+#     Returns:
+#         future_pos (tuple): Predicted future position (future_x, future_y, future_z, future_time).
+#                             Returns (0, 0, 0, future_time) until the buffer is full.
+#     """
+
+#     # Return zeros until the buffer has enough data #
+#     if len(xPos_Buffer) < buffer_length:
+#         return (0, 0, 0)
+
+#     # Use interpolation to predict the next position in the data. #
+#     future_xPos_func = np.polyfit(
+#         list(time_Buffer), list(xPos_Buffer), interpolation_order
+#     )
+#     future_yPos_func = np.polyfit(
+#         list(time_Buffer), list(yPos_Buffer), interpolation_order
+#     )
+#     future_zPos_func = np.polyfit(
+#         list(time_Buffer), list(zPos_Buffer), interpolation_order
+#     )
+
+#     # Evaluate the polynomial at the next time step to get the predicted future position #
+#     future_xPos = np.polyval(future_xPos_func, time_Buffer[-1] + data_time_step)
+#     future_yPos = np.polyval(future_yPos_func, time_Buffer[-1] + data_time_step)
+#     future_zPos = np.polyval(future_zPos_func, time_Buffer[-1] + data_time_step)
+
+#     # Re-pack predicted position into tuple for return #
+#     future_pos = (future_xPos, future_yPos, future_zPos)
+
+#     return future_pos

@@ -1,0 +1,6 @@
+# Python >= 3.9. Tkinter is included with many desktop Python installers.
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+matplotlib>=3.7
+filterpy>=1.4.5

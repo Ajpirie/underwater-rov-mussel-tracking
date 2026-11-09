@@ -1,0 +1,7 @@
+# Generated records and Python local state.
+Outputs/*.csv
+Outputs/*.json
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
